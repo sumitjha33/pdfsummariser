@@ -29,6 +29,10 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+# Configure for production
+app.config['ENV'] = 'production'
+app.config['DEBUG'] = False
+
 # Environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
@@ -379,5 +383,5 @@ def generate_image():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    # Only use this for local development
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
