@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: pdf-summarizer-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_IMAGE_API_KEY
+        sync: false
+      - key: UNSPLASH_ACCESS_KEY
+        sync: false
