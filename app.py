@@ -34,6 +34,9 @@ CORS(app)
 app.config['ENV'] = 'production'
 app.config['DEBUG'] = False
 
+# Explicitly set port for Render
+port = int(os.environ.get("PORT", 10000))
+
 # Environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
@@ -385,4 +388,4 @@ def generate_image():
 
 if __name__ == "__main__":
     # Only use this for local development
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=port)
