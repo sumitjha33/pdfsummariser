@@ -18,13 +18,14 @@ import tempfile
 import hashlib
 from urllib.parse import quote
 import azure.cognitiveservices.speech as speechsdk
-from google import genai
-from google.genai import types
 from PIL import Image
 from io import BytesIO
 import base64
 
 load_dotenv()
+
+# Initialize Google API
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
 CORS(app)
