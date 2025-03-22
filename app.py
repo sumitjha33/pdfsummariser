@@ -1,5 +1,8 @@
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, List
+import uvicorn
 from pypdf import PdfReader
 from langchain.chains import LLMChain
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -18,24 +21,19 @@ import tempfile
 import hashlib
 from urllib.parse import quote
 import azure.cognitiveservices.speech as speechsdk
-from PIL import Image
-from io import BytesIO
-import base64
 
 load_dotenv()
 
-# Initialize Google API
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+app = FastAPI(title="PDF Summarizer API")
 
-app = Flask(__name__)
-CORS(app)
-
-# Configure for production
-app.config['ENV'] = 'production'
-app.config['DEBUG'] = False
-
-# Explicitly set port for Render
-port = int(os.environ.get("PORT", 10000))
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -244,28 +242,33 @@ def format_response(text):
     # Join paragraphs with double line breaks
     return '\n\n'.join(formatted_paragraphs)
 
-@app.route("/api/summarize", methods=["POST"])
-def summarize_pdf():
+class TextRequest(BaseModel):
+    text: str
+
+class SummaryResponse(BaseModel):
+    summary: str
+    sentences: List[str]
+    language: str
+
+@app.post("/api/summarize", response_model=SummaryResponse)
+async def summarize_pdf(
+    file: UploadFile = File(...),
+    mode: str = Form("educational"),
+    depth: str = Form("detailed"),
+    language: str = Form("english"),
+    age_group: str = Form("teens")
+):
     """API endpoint to summarize PDF with options"""
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-    
-    pdf_file = request.files["file"]
-    mode = request.form.get("mode", "educational")
-    depth = request.form.get("depth", "detailed")
-    language = request.form.get("language", "english")
-    age_group = request.form.get("age_group", "teens")
-    
-    if pdf_file.filename == "":
-        return jsonify({"error": "Empty file name"}), 400
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="File must be a PDF")
 
     try:
-        text = extract_text_from_pdf(pdf_file)
+        text = extract_text_from_pdf(file.file)
         depth_config = DEPTH_LEVELS.get(depth, DEPTH_LEVELS["detailed"])
         age_config = AGE_GROUPS.get(age_group)
         
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",  # Changed back to flash model
+            model="gemini-2.0-flash",
             google_api_key=GEMINI_API_KEY,
             temperature=0.3,
             max_output_tokens=2048,
@@ -276,7 +279,7 @@ def summarize_pdf():
         
         prompt_text = f"{lang_config['prompt']}\n\n" + base_template.format(
             depth_instruction=depth_config["instruction"],
-            language_instruction="",  # Remove old language instruction
+            language_instruction="",
             percentage=depth_config["percentage"],
             age_instruction=age_config["instruction"],
             age_group=age_group,
@@ -291,81 +294,51 @@ def summarize_pdf():
         chain = LLMChain(llm=llm, prompt=prompt)
         response = chain.run(text=text)
         
-        # Format response with proper paragraph and sentence breaks
         response = format_response(response)
         
-        # If language is not English, ensure proper translation/transliteration
         if language != "english":
             translator = Translator()
             response = translator.translate(response, dest=lang_config["code"]).text
         
-        # Clean the response
         response = response.replace('*', '').replace('#', '')
         sentences = split_into_sentences(response)
         
-        return jsonify({
-            "summary": response,
-            "sentences": sentences,
-            "language": language
-        })
+        return SummaryResponse(
+            summary=response,
+            sentences=sentences,
+            language=language
+        )
     
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route("/api/speech", methods=["POST"])
-def generate_speech():
-    """API endpoint to generate speech from text"""
-    data = request.json
-    text = data.get('text', '')
-    
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
+@app.post("/api/speech")
+async def generate_speech(request: TextRequest):
+    """Generate speech from text"""
+    if not request.text:
+        raise HTTPException(status_code=400, detail="No text provided")
     
     try:
-        # Use Canadian English voice settings for warmer tone
-        tts = gTTS(
-            text=text, 
-            lang='en',           # English base
-            tld='ca',            # Canadian server
-            lang_check=False,    # Skip language check for speed
-            slow=False           # Normal speed
-        )
-        
+        tts = gTTS(text=request.text, lang='en', tld='ca', lang_check=False, slow=False)
         temp_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
         tts.save(temp_file.name)
         
-        return send_file(
-            temp_file.name,
-            mimetype="audio/mp3",
-            as_attachment=True,
-            download_name="speech.mp3"
+        return StreamingResponse(
+            io.BytesIO(temp_file.read()),
+            media_type="audio/mp3",
+            headers={"Content-Disposition": "attachment; filename=speech.mp3"}
         )
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-def extract_keywords(text):
-    """Extract meaningful keywords for better image matching"""
-    common_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'is', 'are', 'was', 'were'}
-    words = text.lower().split()
-    keywords = [word for word in words if word not in common_words and len(word) > 2]
-    return ' '.join(keywords[:3])  # Take first 3 meaningful keywords
-
-def save_binary_file(file_name, data):
-    f = open(file_name, "wb")
-    f.write(data)
-    f.close()
-
-@app.route("/api/image", methods=["POST"])
-def generate_image():
-    """API endpoint to get relevant image for text"""
-    data = request.json
-    text = data.get('text', '')
-    
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
+@app.post("/api/image")
+async def generate_image(request: TextRequest):
+    """Get relevant image for text"""
+    if not request.text:
+        raise HTTPException(status_code=400, detail="No text provided")
         
     try:
-        search_query = quote(text[:50])  # Use first 50 chars
+        search_query = quote(request.text[:50])
         url = f"https://api.unsplash.com/photos/random?query={search_query}&orientation=landscape"
         
         headers = {
@@ -375,17 +348,16 @@ def generate_image():
         response = requests.get(url, headers=headers)
         if response.ok:
             data = response.json()
-            return jsonify({
+            return {
                 "image_url": data['urls']['regular'],
                 "alt": data.get('alt_description', 'Generated image'),
                 "credit": data['user']['name']
-            })
+            }
             
-        return jsonify({"error": "Failed to fetch image"}), response.status_code
+        raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
             
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    # Only use this for local development
-    app.run(host="0.0.0.0", port=port)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000)
