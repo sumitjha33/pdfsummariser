@@ -3,7 +3,7 @@ services:
     name: pdf-summarizer-api
     env: python
     buildCommand: pip install -r requirements.txt --upgrade
-    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn wsgi:app --bind=0.0.0.0:$PORT --timeout 120
     envVars:
       - key: GEMINI_API_KEY
         sync: false
@@ -12,4 +12,4 @@ services:
       - key: UNSPLASH_ACCESS_KEY
         sync: false
       - key: PORT
-        value: 10000
+        value: 8000
